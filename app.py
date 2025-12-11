@@ -157,7 +157,7 @@ def generate_legal_answer(domain: str, question: str, history: list) -> str:
 
 st.set_page_config(page_title="AI Legal Query Assistant", page_icon="⚖️")
 
-st.title("⚖️ AI-Powered Legal Query Assistant")
+st.title(" AI-Powered Legal Query Assistant")
 st.write(
     "Ask basic questions about **consumer rights, employment law, cyber law, or civil matters**.\n"
     "This tool gives **general information only** and is **not a substitute for professional legal advice**."
