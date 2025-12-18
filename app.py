@@ -101,8 +101,6 @@ STRICT RULES (follow all):
 If information is insufficient, say:
 "It is not possible to provide an answer without more details."
 
-End every complete answer with:
-"This is general legal information, not legal advice. Please consult a qualified lawyer for your specific situation."
 """
 
 
