@@ -1,5 +1,9 @@
 import streamlit as st
+import re
 from groq import Groq
+
+
+st.set_page_config(page_title="AI Legal Query Assistant", page_icon="⚖️")
 
 # ---------- LLM CLIENT ----------
 
@@ -79,83 +83,137 @@ def build_faq_context(domain: str) -> str:
 # ---------- PROMPTS ----------
 
 SYSTEM_PROMPT = """
-You are an AI assistant that gives GENERAL INFORMATION about basic legal topics,
-not personalised legal advice.
+You are a Legal Information Assistant.
 
-SAFETY & COMPLIANCE RULES (VERY IMPORTANT):
-- You are NOT a lawyer and NOT a law firm.
-- You do NOT create a lawyer–client relationship.
-- You only provide high-level, generic information.
-- You MUST NOT draft contracts, notices, petitions, or formal legal documents.
-- You MUST NOT tell users exactly what they 'should' do in their specific case.
-- If a question is complex, high-stakes, or depends on local law, say that they should consult a qualified advocate or legal professional in their jurisdiction.
-- Laws differ by country and change over time. You should speak in general terms (e.g., 'in many places', 'often', 'typically') rather than asserting that something is definitely legal or illegal everywhere.
-- If the user asks for help evading law, doing something illegal, or harming others, refuse and suggest seeking lawful options only.
-- Always include a short disclaimer at the end: 'This is general information, not legal advice. Please consult a qualified lawyer for advice on your specific situation.'
+STRICT RULES (follow all):
+
+1. Answer ONLY the exact question asked by the user.
+2. If the question is vague, incomplete, or lacks necessary facts:
+   - DO NOT provide a legal answer.
+   - ONLY ask the user to clarify what information is missing.
+3. DO NOT assume facts that the user has not stated.
+4. DO NOT guess jurisdiction, country, or specific laws.
+5. If the selected legal domain does not match the question, clearly point it out.
+6. Provide ONLY general legal information, never legal advice.
+7. Do NOT add extra explanations unless explicitly asked.
+8. Use simple, non-technical language.
+
+If information is insufficient, say:
+"It is not possible to provide an answer without more details."
+
+End every complete answer with:
+"This is general legal information, not legal advice. Please consult a qualified lawyer for your specific situation."
 """
 
+
+
 USER_TEMPLATE = """
-User's selected legal domain: {domain}
+User selected legal domain: {domain}
 
-Here are some example FAQs and generic answers for this domain (if any):
----
-{faq_context}
----
-
-Conversation so far (if any):
-{chat_history}
-
-User's new question:
+User question:
 "{question}"
 
 TASK:
-- Answer in simple, clear language.
-- First, briefly identify which general area of law the question relates to and what the user seems to be asking.
-- Provide general information, typical options, or processes that *may* apply in this kind of situation.
-- Do NOT claim to know the exact law in the user's country or give final conclusions.
-- Encourage the user to keep documents, screenshots, or written communication when relevant.
-- If the question is vague or missing critical facts, say what extra information a lawyer would usually need.
-- End with: 'This is general information, not legal advice. Please consult a qualified lawyer for advice on your specific situation.'
+1. First, briefly restate the user's question in one sentence.
+2. Answer ONLY that question.
+3. Use simple, non-technical language.
+4. If the question lacks required information, clearly state what is missing.
+5. If the domain selection appears incorrect, mention it.
+6. Do NOT include unrelated legal explanations.
+7. End with:
 """
 
+def domain_seems_mismatched(domain, question):
+    employment_keywords = ["job", "company", "employer", "salary", "fired", "terminated"]
+    consumer_keywords = ["product", "order", "refund", "seller", "online", "damaged"]
 
-def generate_legal_answer(domain: str, question: str, history: list) -> str:
-    """Call the LLM to generate a safe, domain-aware legal answer."""
+    q = question.lower()
 
-    # Build textual chat history for the prompt (user & assistant messages only)
-    history_lines = []
-    for msg in history:
-        role = msg["role"]
-        content = msg["content"]
-        if role in ("user", "assistant"):
-            history_lines.append(f"{role.capitalize()}: {content}")
-    history_text = "\n".join(history_lines) if history_lines else "No prior messages."
+    if domain == "Consumer Rights" and any(k in q for k in employment_keywords):
+        return True
+    if domain == "Employment Law" and any(k in q for k in consumer_keywords):
+        return True
 
-    faq_context = build_faq_context(domain)
+    return False
+
+def generate_legal_answer(domain, question):
+    # ---------- HARD STOP FOR VAGUE QUESTIONS ----------
+    generic_patterns = [
+        r"\bcan i take legal action\b",
+        r"\bwhat are my rights\b",
+        r"\bis this legal\b",
+        r"\bcan i sue\b",
+        r"\blegal action\b"
+]
+    normalized_question = question.strip().lower()
+    for pattern in generic_patterns:
+        if re.match(pattern, normalized_question):
+            return (
+                "This question is too general to answer.\n\n"
+                "Please describe what happened, who was involved, and what issue you are facing "
+                "so that general legal information can be shared.\n\n"
+                "This is general legal information, not legal advice. "
+                "Please consult a qualified lawyer for your specific situation."
+    )
+
+        if not question or len(question.strip()) < 8:
+            return "Please provide a clearer legal question with more details."
+
+    # HARD STOP FOR DOMAIN MISMATCH
+    if domain_seems_mismatched(domain, question):
+        return (
+            f"The selected domain is '{domain}', but the question appears to relate to a different "
+            "area of law.\n\n"
+            "Please select the correct legal domain or clarify your question.\n\n"
+            "This is general legal information, not legal advice."
+        )
+
+    alignment_instruction = f"""
+IMPORTANT INSTRUCTIONS:
+- Answer ONLY the user's exact question.
+- Do NOT add unrelated legal information.
+- Do NOT assume missing facts.
+- If the selected domain ({domain}) does not match the question, clearly say so.
+- If the information provided is insufficient, explicitly say that.
+- Use simple, non-technical language.
+"""
 
     user_prompt = USER_TEMPLATE.format(
         domain=domain,
-        faq_context=faq_context or "No FAQs available for this domain.",
-        chat_history=history_text,
-        question=question,
+        question=question
     )
+
+    final_prompt = alignment_instruction + "\n\n" + user_prompt
 
     response = client.chat.completions.create(
         model="llama-3.1-8b-instant",
         messages=[
-            {"role": "system", "content": SYSTEM_PROMPT.strip()},
-            {"role": "user", "content": user_prompt.strip()},
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": final_prompt}
         ],
-        temperature=0.2,
-        max_tokens=900,
+        temperature=0.1,
+        max_tokens=500
     )
 
-    return response.choices[0].message.content.strip()
+    
+    raw_answer = response.choices[0].message.content.strip()
+
+    final_answer = (
+        raw_answer
+        + "\n\n"
+        + "This is general legal information, not legal advice. "
+          "Please consult a qualified lawyer for your specific situation."
+    )
+
+    return final_answer
+
+
+
 
 
 # ---------- STREAMLIT CHAT UI ----------
 
-st.set_page_config(page_title="AI Legal Query Assistant", page_icon="⚖️")
+
 
 st.title(" AI-Powered Legal Query Assistant")
 st.write(
@@ -199,7 +257,8 @@ if user_input:
     # Generate assistant response
     with st.chat_message("assistant"):
         with st.spinner("Thinking..."):
-            answer = generate_legal_answer(domain, user_input, st.session_state.messages)
+            answer = generate_legal_answer(domain, user_input)
+
             st.markdown(answer)
 
     # Save assistant response in history
